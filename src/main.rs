@@ -1,80 +1,66 @@
-use axum::{Router, routing::get, Json};
-use serde_json::{json, Value};
-use std::net::SocketAddr;
-use tokio::signal;
-use tower_http::cors::CorsLayer;
-use tracing_subscriber::{EnvFilter, fmt};
+use axum::{Router, Json, routing::get, response::IntoResponse};
+use serde_json::json;
+use tower_http::cors::{CorsLayer, Any};
+use tracing_subscriber;
 
+mod gguf_engine;
+mod openai_api;
 mod api_server;
 mod auth;
-mod hailo_engine;
-mod onnx_engine;
-mod multi_gpu;
+
+use gguf_engine::{GgufEngine, detect_gpu_backend};
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
-    fmt()
-        .with_env_filter(EnvFilter::from_default_env()
-            .add_directive("hermes=debug".parse()?)
-            .add_directive("tower_http=info".parse()?))
-        .init();
+async fn main() {
+    tracing_subscriber::fmt::init();
 
-    tracing::info!("🦀 Hermes Rust Backend starting...");
+    let (backend, gpu_count) = detect_gpu_backend();
+    println!("🦀 Hermes Rust Backend v0.2.0");
+    println!("   GPU Backend: {} ({} GPU(s))", backend, gpu_count);
+    if backend == gguf_engine::GpuBackend::CUDA {
+        println!("   Flash Attention: enabled");
+    }
 
-    // Build router
+    let gguf = GgufEngine::new();
+    let state = axum::extract::State(std::sync::Arc::new(std::sync::Mutex::new(gguf)));
+
     let app = Router::new()
         .route("/health", get(health))
-        .route("/engines", get(list_engines))
-        .nest("/v1", api_server::routes())
+        .route("/engines", get(engines_info))
+        .merge(openai_api::openai_routes())
+        .merge(api_server::api_routes())
         .layer(CorsLayer::permissive());
 
-    // Bind
-    let addr: SocketAddr = "0.0.0.0:8769".parse()?;
-    tracing::info!("🚀 API listening on http://{}", addr);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-
-    Ok(())
+    let addr = "0.0.0.0:8769";
+    println!("   Listening on {addr}");
+    axum::serve(
+        tokio::net::TcpListener::bind(addr).await.unwrap(),
+        app,
+    ).await.unwrap();
 }
 
-async fn health() -> Json<Value> {
+async fn health() -> impl IntoResponse {
     Json(json!({
-        "status": "ok",
         "service": "hermes-rust-backend",
-        "version": env!("CARGO_PKG_VERSION"),
-        "timestamp": chrono::Utc::now().to_rfc3339()
+        "version": "0.2.0",
+        "status": "ok",
+        "features": ["gguf", "openai_api", "hailo8", "flash_attention"]
     }))
 }
 
-async fn list_engines() -> Json<Value> {
+async fn engines_info() -> impl IntoResponse {
+    let (backend, gpu_count) = detect_gpu_backend();
     Json(json!({
-        "engines": [
-            {"name": "onnx", "status": onnx_engine::is_available(), "models": ["SenseNova-U1-8B-MoT"]},
-            {"name": "hailo", "status": hailo_engine::is_available(), "models": ["YOLOv8m", "ResNet-18", "PaddleOCR"]},
-            {"name": "cuda", "status": multi_gpu::is_available(), "devices": multi_gpu::device_count()}
-        ]
+        "engines": {
+            "gguf": {
+                "available": true,
+                "backend": backend.to_string(),
+                "gpu_count": gpu_count,
+                "flash_attention": backend == gguf_engine::GpuBackend::CUDA
+            },
+            "hailo8": {
+                "available": std::path::Path::new("/dev/hailo0").exists()
+            }
+        }
     }))
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async { signal::ctrl_c().await.expect("Ctrl+C handler") };
-    #[cfg(unix)]
-    let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("SIGTERM handler")
-            .recv()
-            .await;
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-    
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = terminate => {},
-    }
-    tracing::info!("🛑 Shutting down...");
 }
