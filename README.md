@@ -203,13 +203,13 @@ docker run --gpus all -p 8769:8769 hermes-rust-backend
 This backend runs on a **3-machine cluster**:
 
 ```
-┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐
-│     GLYPH        │   │    EUREKAI       │   │     THOR        │
-│  Hermes Agent    │──►│  Rust Backend    │   │  Home Assistant │
-│  (orchestrator)  │   │  2x RTX 3060     │   │  Automations    │
-│  :3001           │   │  Hailo-8 NPU     │   │  :8123          │
-│                  │   │  :8769           │   │                 │
-└─────────────────┘   └─────────────────┘   └─────────────────┘
+┌──────────────── ─┐   ┌─────────────────┐   ┌─────────────────┐
+│ GLYPH  mini-pc   │   │    EUREKAI      │   │  THOR laptop    │
+│  Hermes Agent    │──►│  Rust Backend   │   │  Home Assistant │
+│  (orchestrator)  │   │  2x RTX 3060    │   │  Automations    │
+│  :3001           │   │  Hailo-8 NPU    │   │  :8123          │
+│                  │   │  :8769          │   │                 │
+└──────────────── ─┘   └─────────────────┘   └─────────────────┘
          │                      │
          │    ┌─────────────────┘
          ▼    ▼
