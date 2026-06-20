@@ -2,21 +2,40 @@
 
 [![Rust](https://img.shields.io/badge/rust-2021-orange.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-green.svg)]()
-[![Status](https://img.shields.io/badge/status-active-brightgreen.svg)]()
+[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)]()
 
-High-performance Rust backend for Hermes Agent — GGUF inference, Hailo-8 vision, OpenAI-compatible API.
+**High-performance Rust backend for Hermes Agent** — LocalAI proxy, MCP bridge, Hailo-8 vision, 3-GPU support.
+
+> **v0.3.0** — Refonte complète : proxy LocalAI (plus de dépendance `llama-cpp-2`), bridge MCP (5 outils), 
+> détection multi-GPU, streaming SSE. Déployé sur EUREKAI:8769.
+
+## Quick Start
+
+```bash
+# Build
+cargo build --release
+
+# Run
+./target/release/hermes-rust-backend
+# → Listening on 0.0.0.0:8769
+# → Auto-connecte à LocalAI (192.168.1.47:8080)
+# → 8 modèles disponibles
+```
 
 ## Architecture
 
 ```
 hermes-rust-backend/
 ├── src/
-│   ├── gguf_engine.rs     — llama.cpp GGUF inference (llama-cpp-2)
-│   ├── hailo_engine.rs    — Hailo-8 NPU: classify/detect/OCR
-│   ├── openai_api.rs      — /v1/chat/completions, /v1/models
-│   ├── api_server.rs      — Hermes-specific endpoints
-│   └── auth.rs            — JWT authentication
-├── models/                — GGUF model files
+│   ├── main.rs           — Serveur Axum, auto-découverte LocalAI
+│   ├── gguf_engine.rs    — Proxy LocalAI (8 modèles, inférence réelle)
+│   ├── openai_api.rs     — /v1/chat/completions, /v1/models (streaming)
+│   ├── api_server.rs     — /status, endpoints Hermes
+│   ├── mcp_bridge.rs     — 5 outils MCP pour Hermes Agent
+│   ├── hailo_engine.rs   — Hailo-8 : classify/detect/OCR via MCP bridge
+│   ├── multi_gpu.rs      — Détection 3 GPUs (2×RTX3060 + GTX1060)
+│   ├── auth.rs           — JWT authentication
+│   └── onnx_engine.rs    — ONNX Runtime (détection automatique)
 └── Cargo.toml
 ```
 
@@ -24,51 +43,69 @@ hermes-rust-backend/
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/v1/chat/completions` | POST | OpenAI-compatible chat (real GGUF inference) |
-| `/v1/models` | GET | Available models |
-| `/health` | GET | Service status + model availability |
-| `/engines` | GET | GGUF + Hailo-8 engine status |
+| `/health` | GET | Status + version + features |
+| `/engines` | GET | Tous les engines (GGUF, Hailo, CUDA, ONNX) |
+| `/v1/chat/completions` | POST | OpenAI-compatible (proxy LocalAI) |
+| `/v1/models` | GET | Modèles disponibles depuis LocalAI |
+| `/status` | GET | Status engines + GPU count |
+| `/mcp/tools` | GET | 5 outils MCP pour Hermes Agent |
 
-## Build Requirements
+### MCP Tools (Hermes Integration)
 
-- **Rust** 1.75+
-- **libclang** (for llama-cpp-2 bindgen): `sudo apt install libclang-dev`
-- **CUDA Toolkit** (optional): `nvidia-cuda-toolkit`
-- Target: **EUREKAI** (Linux x86_64, GPU recommended)
+```
+mcp_gguf_infer     — Générer du texte via LocalAI
+mcp_hailo_classify — Classifier une image via Hailo-8 ResNet
+mcp_hailo_detect   — Détection YOLOv8m via Hailo-8
+mcp_hailo_ocr      — OCR via Hailo-8 Tesseract
+mcp_engine_status  — Statut de tous les engines
+```
+
+## Déploiement (EUREKAI)
 
 ```bash
+# Sur EUREKAI (192.168.1.47):
+cd ~/hermes-rust-backend
+git pull
 cargo build --release
-./target/release/hermes-rust-backend
-# → Listening on 0.0.0.0:8769
+pkill -f hermes-rust-backend
+nohup ./target/release/hermes-rust-backend > /tmp/rust_backend.log 2>&1 &
+
+# Vérifier
+curl localhost:8769/health
+curl localhost:8769/engines
+curl localhost:8769/mcp/tools
 ```
 
-## Quick Start
+## Utilisation depuis Hermes
 
 ```bash
-# Drop a GGUF model
-mkdir -p models/
-cp ~/models/gemma-4-e2b-it-Q4_K_M.gguf models/
+# Chat via proxy LocalAI
+curl -X POST localhost:8769/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello"}]}'
 
-# Start server
-cargo run --release
-```
-
-Then use as OpenAI provider in Hermes:
-```bash
-hermes config set model.base_url http://192.168.1.47:8769/v1
-hermes config set model.default gguf
+# MCP tools
+curl localhost:8769/mcp/tools
 ```
 
 ## Performance
 
-- **GGUF Engine** — llama.cpp native, token sampling with temperature
-- **Hailo-8** — 26 TOPS NPU, REST bridge to Python MCP
-- **Timing** — every inference returns tokens/sec + ms elapsed
+- **LocalAI Proxy** — 8 modèles (gpt-4o, whisper-1, tts-1, stable-diffusion, etc.)
+- **Hailo-8** — 26 TOPS NPU, REST bridge (192.168.1.47:8767)
+- **3 GPUs** — 2× RTX 3060 + GTX 1060
+- **Timing** — Chaque inference retourne tokens/sec + ms
+
+## Dépendances
+
+- Rust 2021 edition
+- LocalAI sur EUREKAI (:8080) — requis pour l'inférence
+- Hailo-8 API (:8767) — optionnel
+- Aucune dépendance C (plus de `llama-cpp-2` / `libclang`)
 
 ## Projets liés
 
 - [cogniarc](https://github.com/zedarvates/cogniarc) — Cognitive reasoning engine
+- [hyperframes](https://github.com/heygen-com/hyperframes) — HTML-to-Video framework
 - [hermes-brain](https://github.com/zedarvates/hermes-brain) — Architecture cognitive
-- [kitten-tts](https://github.com/zedarvates/kitten-tts) — TTS local FR
 
 ## Licence MIT
