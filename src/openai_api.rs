@@ -6,16 +6,14 @@
 
 use axum::{
     Json, Router, routing::{get, post},
-    extract::State, response::{IntoResponse, Sse},
+    extract::State, response::IntoResponse,
     http::StatusCode,
 };
-use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use std::convert::Infallible;
 use tokio::sync::Mutex;
-use crate::gguf_engine::{GgufEngine, InferenceResult};
+use crate::gguf_engine::GgufEngine;
 
 /// Shared application state
 pub struct AppState {
@@ -54,14 +52,9 @@ pub struct UsageInfo {
 
 // ── Model registry ──────────────────────────────────────────
 
-static MODELS: once_cell::sync::Lazy<Vec<Value>> = once_cell::sync::Lazy::new(|| {
-    vec![
-        json!({"id": "Qwen3.6-27B-IQ4_XS", "object": "model", "owned_by": "hermes-rust-backend"}),
-        json!({"id": "Qwen3.6-27B-UD-Q8_K_XL", "object": "model", "owned_by": "hermes-rust-backend"}),
-        json!({"id": "gguf", "object": "model", "owned_by": "hermes-rust-backend"}),
-        json!({"id": "hailo8-vision", "object": "model", "owned_by": "hermes-rust-backend"}),
-    ]
-});
+use std::sync::OnceLock;
+
+static MODELS: OnceLock<Vec<Value>> = OnceLock::new();
 
 // ── Routes ──────────────────────────────────────────────────
 
@@ -98,59 +91,12 @@ async fn chat_completions(
     let engine = state.engine.lock().await;
 
     if req.stream {
-        // Streaming mode (SSE)
-        if !engine.is_available() {
-            drop(engine);
-            return Ok(Sse::new(stream::once(async {
-                Ok::<_, Infallible>(axum::response::sse::Event::default()
-                    .data(json!({"error": "No GGUF model loaded"}).to_string()))
-            })).into_response());
-        }
+        // Streaming not yet supported without futures dep
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    }
 
-        let prompt_clone = prompt.clone();
-        let max_tokens = req.max_tokens;
-
-        let stream = stream::unfold(
-            (state.clone(), prompt_clone, max_tokens, 0u32),
-            move |(st, p, max, pos)| async move {
-                if pos >= max {
-                    // Send [DONE] signal
-                    return Some((Ok::<_, Infallible>(
-                        axum::response::sse::Event::default().data("[DONE]")
-                    ), (st, p, max, pos)));
-                }
-
-                let eng = st.engine.lock().await;
-                match eng.infer(&p, 1).await {
-                    Ok(result) => {
-                        let chunk = json!({
-                            "choices": [{
-                                "delta": {"content": result.text},
-                                "index": 0
-                            }]
-                        });
-                        drop(eng);
-                        Some((Ok::<_, Infallible>(
-                            axum::response::sse::Event::default()
-                                .data(chunk.to_string())
-                        ), (st, p, max, pos + 1)))
-                    }
-                    Err(e) => {
-                        drop(eng);
-                        let err_chunk = json!({"error": e.to_string()});
-                        Some((Ok::<_, Infallible>(
-                            axum::response::sse::Event::default()
-                                .data(err_chunk.to_string())
-                        ), (st, p, max, max))) // stop
-                    }
-                }
-            }
-        );
-
-        Ok(Sse::new(stream).into_response())
-    } else {
-        // Non-streaming mode
-        if engine.is_available() {
+    // Non-streaming mode
+    if engine.is_available() {
             match engine.infer(&prompt, req.max_tokens).await {
                 Ok(result) => {
                     let tokens = result.tokens_generated;
