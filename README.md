@@ -109,3 +109,8 @@ curl localhost:8769/mcp/tools
 - [hermes-brain](https://github.com/zedarvates/hermes-brain) — Architecture cognitive
 
 ## Licence MIT
+
+
+---
+
+[![Donate](https://img.shields.io/badge/☕%20Soutenir-BTC%20%7C%20ETH-orange)](DONATE.md)
